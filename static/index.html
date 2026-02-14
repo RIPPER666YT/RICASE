@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>RICASE — открытие кейса</title>
+
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      background: transparent;
+      overflow: hidden;
+      height: 100vh;
+      font-family: Arial, Helvetica, sans-serif;
+      color: white;
+    }
+
+    /* Статус подключения в центре экрана */
+    #status {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 5.5rem;
+      font-weight: bold;
+      color: #00ff88;
+      text-shadow: 0 0 20px #00ff88, 0 0 40px #00cc77, 0 0 60px #009955;
+      letter-spacing: 4px;
+      white-space: nowrap;
+      z-index: 100;
+      opacity: 0;
+      transition: opacity 1.5s ease-in-out;
+    }
+
+    #status.visible {
+      opacity: 1;
+    }
+
+    /* Оверлей с кейсом */
+    #overlay {
+      position: fixed;
+      inset: 0;
+      opacity: 0;
+      transition: opacity 0.7s;
+      pointer-events: none;
+    }
+
+    #case-container {
+      position: fixed;
+      top: 40px;
+      right: 30px;
+      width: 720px;
+      height: 200px;
+      opacity: 0;
+      transition: opacity 0.9s;
+    }
+
+    #case-container.visible {
+      opacity: 1;
+    }
+
+    .case-window {
+      width: 100%;
+      height: 140px;
+      background: linear-gradient(135deg, #3a0066, #1a0033);
+      border: 3px solid #9000c0;
+      border-radius: 12px;
+      box-shadow: 0 0 40px rgba(180,0,255,0.4),
+                  inset 0 0 50px rgba(100,0,180,0.3);
+      overflow: hidden;
+      position: relative;
+    }
+
+    .arrow {
+      position: absolute;
+      bottom: 177px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 0;
+      height: 0;
+      border-left: 18px solid transparent;
+      border-right: 18px solid transparent;
+      border-top: 22px solid #9000c0;
+      filter: drop-shadow(0 0 8px #c060ff);
+      z-index: 5;
+    }
+
+    .username {
+      position: absolute;
+      bottom: 6px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 2.3rem;
+      font-weight: bold;
+      color: #9000c0;
+      text-shadow: 0 0 18px #000, 0 0 28px #000, 0 0 40px #7e00ff;
+      z-index: 5;
+      white-space: nowrap;
+    }
+
+    .roulette-container {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      overflow: hidden;
+    }
+
+    .roulette-strip {
+      display: flex;
+      flex-direction: row;
+      transition: transform 6s cubic-bezier(0.09, 0.85, 0.16, 1.02);
+      will-change: transform;
+    }
+
+    .item {
+      flex: 0 0 120px;
+      width: 120px;
+      height: 120px;
+      margin: 0 6px;
+      border-radius: 10px;
+      overflow: hidden;
+      background: #0f0f1f;
+      box-shadow: inset 0 0 14px rgba(0,0,0,0.8);
+    }
+
+    .item img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      object-position: center;
+      image-rendering: -webkit-optimize-contrast;
+    }
+
+    .item.fallback {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #888;
+      font-size: 11px;
+      text-align: center;
+      padding: 6px;
+      line-height: 1.3;
+      background: #181830;
+    }
+
+    .item.winner {
+      z-index: 4;
+      box-shadow: 0 0 30px #fff8, inset 0 0 20px #fff8;
+    }
+  </style>
+</head>
+<body>
+
+<div id="status">ПОДКЛЮЧЕНО</div>
+
+<div id="overlay">
+  <div id="case-container">
+    <div class="arrow"></div>
+    <div class="case-window">
+      <div class="roulette-container">
+        <div class="roulette-strip" id="strip"></div>
+      </div>
+    </div>
+    <div class="username" id="username"></div>
+  </div>
+</div>
+
+<script>
+// ────────────────────────────────────────────────
+//   Глобальные переменные
+// ────────────────────────────────────────────────
+let isPlaying = false;
+let queue = [];                 // очередь пользователей, если несколько !open подряд
+let itemsList = [];             // все предметы из настроек
+let currentSettings = null;
+
+// ────────────────────────────────────────────────
+//   Загрузка настроек при старте
+// ────────────────────────────────────────────────
+fetch('/api/settings')
+  .then(r => r.json())
+  .then(data => {
+    currentSettings = data;
+    itemsList = currentSettings.items || [];
+  })
+  .catch(err => console.error("Не удалось загрузить настройки", err));
+
+
+// ────────────────────────────────────────────────
+//   Создание одного предмета в рулетке
+// ────────────────────────────────────────────────
+function createItem(item, isWinner = false) {
+  const div = document.createElement('div');
+  div.className = `item${isWinner ? ' winner' : ''}`;
+
+  if (item.image_url?.trim()) {
+    const img = document.createElement('img');
+    img.src = item.image_url.trim();
+    img.alt = item.name;
+    img.onerror = () => {
+      img.remove();
+      const fb = document.createElement('div');
+      fb.className = 'fallback';
+      fb.textContent = (item.name.split('|')[1] || item.name).trim() || item.name;
+      div.appendChild(fb);
+    };
+    div.appendChild(img);
+  } else {
+    const fb = document.createElement('div');
+    fb.className = 'fallback';
+    fb.textContent = (item.name.split('|')[1] || item.name).trim() || item.name;
+    div.appendChild(fb);
+  }
+
+  return div;
+}
+
+
+// ────────────────────────────────────────────────
+//   Генерация ленты рулетки (42 случайных + победитель + 8 случайных)
+// ────────────────────────────────────────────────
+function generateStrip(winnerItem) {
+  const strip = document.getElementById('strip');
+  strip.innerHTML = '';
+
+  // 42 случайных предмета слева
+  for (let i = 0; i < 42; i++) {
+    if (!itemsList.length) continue;
+    const rnd = itemsList[Math.floor(Math.random() * itemsList.length)];
+    strip.appendChild(createItem(rnd));
+  }
+
+  // Победный предмет (центр)
+  strip.appendChild(createItem(winnerItem, true));
+
+  // 8 случайных справа (чтобы красиво уехало)
+  for (let i = 0; i < 8; i++) {
+    if (!itemsList.length) continue;
+    const rnd = itemsList[Math.floor(Math.random() * itemsList.length)];
+    strip.appendChild(createItem(rnd));
+  }
+}
+
+
+// ────────────────────────────────────────────────
+//   Отправка результата в чат
+// ────────────────────────────────────────────────
+function sendChatResult(username, item, rarity_name, already_have) {
+  let msg = `@${username} → ${item.name} (${rarity_name})`;
+  if (already_have) msg += " (уже есть)";
+
+  fetch('/api/send_chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message: msg })
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (!data.success) {
+      console.warn("Не удалось отправить результат в чат", data);
+    }
+  })
+  .catch(err => console.error("Ошибка отправки в чат:", err));
+}
+
+
+// ────────────────────────────────────────────────
+//   Показ анимации открытия кейса
+// ────────────────────────────────────────────────
+function showCase(username) {
+  if (isPlaying) {
+    queue.push(username);
+    return;
+  }
+
+  isPlaying = true;
+
+  const overlay   = document.getElementById('overlay');
+  const container = document.getElementById('case-container');
+  const userEl    = document.getElementById('username');
+  const strip     = document.getElementById('strip');
+
+  fetch('/api/open', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username })
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (!data.success) {
+      console.log("Не удалось открыть кейс:", data.message || data.error);
+      isPlaying = false;
+      if (queue.length) setTimeout(() => showCase(queue.shift()), 800);
+      return;
+    }
+
+    userEl.textContent = username;
+    generateStrip(data.item);
+
+    overlay.style.opacity = '1';
+    container.classList.add('visible');
+
+    // Сбрасываем позицию
+    strip.style.transition = 'none';
+    strip.style.transform = 'translateX(0)';
+    void strip.offsetWidth; // force reflow
+
+    // Рассчитываем позицию победителя в центре
+    const itemSize = 132;               // 120 + 6*2 margin
+    const winnerIndex = 42;
+    const winnerPos = winnerIndex * itemSize;
+    const centerOffset = (720 / 2) - (120 / 2);
+    const finalX = -(winnerPos - centerOffset);
+
+    // Запускаем анимацию
+    setTimeout(() => {
+      strip.style.transition = 'transform 6.2s cubic-bezier(0.09,0.85,0.16,1.02)';
+      strip.style.transform = `translateX(${finalX}px)`;
+    }, 150);
+
+    // Отправляем результат в чат через ~7.2 секунды
+    setTimeout(() => {
+      sendChatResult(
+        data.username,
+        data.item,
+        data.rarity_name,
+        data.already_have
+      );
+    }, 7200);
+
+    // Скрываем оверлей
+    setTimeout(() => {
+      overlay.style.opacity = '0';
+      container.classList.remove('visible');
+
+      setTimeout(() => {
+        isPlaying = false;
+        if (queue.length) showCase(queue.shift());
+      }, 1000);
+    }, 8500);
+  })
+  .catch(err => {
+    console.error("Ошибка открытия кейса:", err);
+    isPlaying = false;
+    if (queue.length) setTimeout(() => showCase(queue.shift()), 800);
+  });
+}
+
+
+// ────────────────────────────────────────────────
+//   Опрос очереди каждые 1.2 секунды
+// ────────────────────────────────────────────────
+setInterval(() => {
+  fetch('/api/get_pending')
+    .then(r => r.json())
+    .then(data => {
+      if (data.success) {
+        showCase(data.username);
+      }
+    })
+    .catch(err => console.error("Ошибка опроса очереди:", err));
+}, 1200);
+
+
+// ────────────────────────────────────────────────
+//   Показываем статус подключения при загрузке
+// ────────────────────────────────────────────────
+window.addEventListener('load', () => {
+  const status = document.getElementById('status');
+  status.classList.add('visible');
+  setTimeout(() => {
+    status.style.opacity = '0';
+  }, 5000);
+});
+
+</script>
+</body>
+</html>
